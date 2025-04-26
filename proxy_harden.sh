@@ -12,10 +12,6 @@ VM_BRIDGE="vmbr0"   # Netzwerkinterface für vmbr0 (dynamisch setzen)
 DISABLE_SERVICES=("telnet") # Dienste, die deaktiviert werden sollen (Liste erweitern)
 EMAIL="$PROXMOX_USER@localhost" # Ziel-E-Mail für Root-Mails
 
-# Benutzer als Sudo-Admin festlegen
-echo "Einrichten des Benutzers $PROXMOX_USER als Sudo-Admin..."
-usermod -aG sudo "$PROXMOX_USER"
-
 # Nicht benötigte Dienste deaktivieren
 echo "Deaktivieren nicht benötigter Dienste..."
 for service in "${DISABLE_SERVICES[@]}"; do
@@ -57,8 +53,8 @@ echo "Installieren und Konfigurieren von Fail2ban..."
 apt-get install -y fail2ban
 cat <<EOF > /etc/fail2ban/jail.local
 [DEFAULT]
-bantime = 10m
-findtime = 10m
+bantime = 600
+findtime = 600
 maxretry = 3
 destemail = $EMAIL
 sender = fail2ban@$HOSTNAME
@@ -66,7 +62,11 @@ mta = sendmail
 
 [sshd]
 enabled = true
+port = ssh
 backend = systemd
+maxretry = 3
+bantime = 600
+findtime = 600
 
 [proxmox]
 enabled = true
