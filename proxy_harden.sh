@@ -428,8 +428,13 @@ EOF
 
     cat <<EOF > /etc/fail2ban/filter.d/proxmox.conf
 [Definition]
-failregex = .*authentication failure;.*user=<F-USER>.*
+
+failregex = ^.*pam_unix\(proxmox-ve-auth:auth\): authentication failure; .* rhost=<HOST> .*$
+
+            ^.*pvedaemon\[.*\]: authentication failure; rhost=<HOST> .*$
+
 ignoreregex =
+
 EOF
 
     systemctl enable --now fail2ban
