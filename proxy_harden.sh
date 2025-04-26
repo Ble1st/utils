@@ -8,9 +8,16 @@ fi
 
 # Variablen (dynamisch anpassbar)
 PROXMOX_USER="test" # Benutzername für Proxmox-Admin (dynamisch setzen)
-VM_BRIDGE="vmbr0"   # Netzwerkinterface für vmbr0 (dynamisch setzen)
 DISABLE_SERVICES=("telnet") # Dienste, die deaktiviert werden sollen (Liste erweitern)
 EMAIL="$PROXMOX_USER@localhost" # Ziel-E-Mail für Root-Mails
+
+# MTA (Postfix) installieren und konfigurieren
+echo "Installieren und Konfigurieren von Postfix..."
+debconf-set-selections <<< "postfix postfix/mailname string $(hostname)"
+debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Local only'"
+apt-get install -y postfix
+sed -i "s/^mydestination.*/mydestination = localhost/" /etc/postfix/main.cf
+systemctl restart postfix
 
 # Nicht benötigte Dienste deaktivieren
 echo "Deaktivieren nicht benötigter Dienste..."
@@ -148,6 +155,9 @@ vm.mmap_min_addr = 65536
 # Disable uncommon protocols
 net.ipv4.tcp_timestamps = 0
 net.ipv4.tcp_sack = 0
+
+# Core Dumps deaktivieren
+fs.suid_dumpable = 0
 EOF
 
 sysctl -p
@@ -165,6 +175,34 @@ mount -o remount /dev/shm
 echo "Installieren und Aktivieren von Auditd..."
 apt-get install -y auditd
 systemctl enable --now auditd
+
+# AIDE installieren und einrichten
+echo "Installieren und Einrichten von AIDE..."
+apt-get install -y aide
+aideinit
+mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+cat <<EOF > /etc/cron.daily/aide
+#!/bin/bash
+/usr/bin/aide.wrapper --check
+EOF
+chmod +x /etc/cron.daily/aide
+
+# Rootkit Hunter (rkhunter) installieren und konfigurieren
+echo "Installieren und Konfigurieren von rkhunter..."
+apt-get install -y rkhunter
+rkhunter --update
+rkhunter --propupd
+cat <<EOF > /etc/cron.daily/rkhunter
+#!/bin/bash
+/usr/bin/rkhunter --check --sk --report-warnings-only
+EOF
+chmod +x /etc/cron.daily/rkhunter
+
+# SSH-Konfiguration (Passwortlogin erlauben, kein Key)
+echo "Konfigurieren von SSH (nur Passwortlogin)..."
+sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+systemctl reload sshd
 
 # Abschluss
 echo "Sicherheitsmaßnahmen abgeschlossen. Bitte überprüfen Sie die Konfiguration."
