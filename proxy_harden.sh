@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_VERSION="1.5"
+SCRIPT_VERSION="1.6"
 LOGFILE="/var/log/proxmox_hardening.log"
 
 # === Konfigurierbare Variablen ===
@@ -147,7 +147,7 @@ schritt_fail2ban() {
     apt-get install -y fail2ban || { log "Fehler: fail2ban konnte nicht installiert werden!"; exit 1; }
     cat <<EOF > /etc/fail2ban/jail.local
 [DEFAULT]
-bantime  = 10m
+bantime  = 1h
 findtime  = 10m
 maxretry = 3
 usedns = warn
@@ -165,13 +165,14 @@ fail2ban_agent = Fail2Ban/%(fail2ban_version)s
 banaction = iptables-multiport
 banaction_allports = iptables-allports
 action = %(banaction)s[port="%(port)s", protocol="%(protocol)s", chain="%(chain)s"]
+ignoreip = 127.0.0.1/8 192.168.0.0/24 10.0.0.0/24
 
 [sshd]
 enabled = true
-port = ssh
+port = 2222
 backend = systemd
 maxretry = 3
-bantime = 600
+bantime = 3600
 findtime = 600
 
 [proxmox]
@@ -180,7 +181,7 @@ port = 8006
 filter = proxmox
 backend = systemd
 maxretry = 3
-bantime = 600
+bantime = 3600
 findtime = 600
 EOF
 
@@ -251,6 +252,8 @@ net.ipv4.tcp_timestamps = 0
 net.ipv4.tcp_sack = 0
 # Core Dumps deaktivieren
 fs.suid_dumpable = 0
+# Zusätzliche Härtungsempfehlungen
+net.ipv4.tcp_syn_retries = 3
 EOF
 
     sysctl -w net.ipv4.ip_forward=1
@@ -307,7 +310,7 @@ EOF
     mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db || true
     create_cronjob_once "/etc/cron.daily/aide" "#!/bin/bash
 if [ -x /usr/bin/aide.wrapper ]; then
-    /usr/bin/aide.wrapper --check
+    /usr/bin/aide.wrapper --check | mail -s 'AIDE Report' $EMAIL
 fi
 "
     log "AIDE installiert und Proxmox-Konfiguration integriert."
@@ -319,7 +322,7 @@ schritt_rkhunter() {
     rkhunter --propupd -y || true
     create_cronjob_once "/etc/cron.daily/rkhunter" "#!/bin/bash
 if [ -x /usr/bin/rkhunter ]; then
-    /usr/bin/rkhunter --check --sk --report-warnings-only
+    /usr/bin/rkhunter --check --sk --report-warnings-only | mail -s 'RKHunter Report' $EMAIL
 fi
 "
     log "rkhunter installiert und konfiguriert."
@@ -328,13 +331,15 @@ fi
 schritt_ssh_config() {
     if [ -f /etc/ssh/sshd_config ]; then
         backup_file /etc/ssh/sshd_config
-        # Passwort-Login weiterhin erlaubt, Root-Login verboten
+        # Passwort-Login erlauben, Root-Login verbieten, Port ändern und MaxAuthTries begrenzen
         sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
         sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+        sed -i 's/^#\?Port .*/Port 2222/' /etc/ssh/sshd_config
+        sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 3/' /etc/ssh/sshd_config
 
         if sshd -t; then
             systemctl reload sshd
-            log "SSH-Konfiguration: Passwort-Login erlaubt, Root-Login verboten."
+            log "SSH-Konfiguration: Passwort-Login erlaubt, Root-Login verboten, Port geändert."
         else
             log "Fehler in der SSH-Konfiguration!"
         fi
@@ -353,6 +358,24 @@ schritt_blacklist_modules() {
 schritt_kexec_tools() {
     apt-get install -y kexec-tools || { log "Fehler: kexec-tools konnte nicht installiert werden!"; exit 1; }
     log "kexec-tools installiert. Ermöglicht schnellen Kernel-Neustart nach automatischen Kernel-Updates."
+}
+
+schritt_clamav() {
+    apt-get update
+    apt-get install -y clamav clamav-daemon || { log "Fehler: ClamAV konnte nicht installiert werden!"; exit 1; }
+    systemctl enable --now clamav-daemon
+    systemctl enable --now clamav-freshclam
+    log "ClamAV installiert und Dienste aktiviert."
+
+    # Täglichen Scan einrichten, Logfile per Mail versenden
+    create_cronjob_once "/etc/cron.daily/clamav-scan" "#!/bin/bash
+freshclam -q
+clamscan -ri / --exclude-dir='^/sys' --exclude-dir='^/proc' --log=/var/log/clamav/clamscan.log
+if [ -s /var/log/clamav/clamscan.log ]; then
+    mail -s 'ClamAV Scan Report' $EMAIL < /var/log/clamav/clamscan.log
+fi
+"
+    log "ClamAV täglicher Scan eingerichtet."
 }
 
 schritt_autoremove() {
@@ -375,6 +398,7 @@ schritt_systemchecks() {
     mount | grep /dev/shm >/dev/null || log "Warnung: /dev/shm ist nicht eingehängt!"
     systemctl is-active auditd >/dev/null || log "Warnung: auditd läuft nicht!"
     systemctl is-active apparmor >/dev/null || log "Warnung: AppArmor läuft nicht!"
+    systemctl is-active clamav-daemon >/dev/null || log "Warnung: clamav-daemon läuft nicht!"
 }
 
 schritt_final_message() {
@@ -387,7 +411,7 @@ schritt_final_message() {
         SUBJECT="Proxmox-Hardening abgeschlossen"
     fi
     if check_command mail; then
-        echo "Das Proxmox-Hardening-Skript (Version $SCRIPT_VERSION) wurde erfolgreich ausgeführt. Bitte prüfen Sie das Logfile ($LOGFILE) und führen Sie ggf. einen Neustart durch." | mail -s "$SUBJECT" "$EMAIL"
+        echo "Das Proxmox-Hardening-Skript (Version $SCRIPT_VERSION) wurde erfolgreich ausgeführt. Bitte prüfen Sie das Logfile ($LOGFILE) und führen Sie ggf. einen Neustart durch." | mail -s "$SUBJECT" $EMAIL
     fi
 }
 
@@ -414,6 +438,7 @@ show_menu() {
     echo "18) Autoremove nicht mehr benötigter Pakete"
     echo "19) Systemprüfung nach Härtung"
     echo "20) Alle Schritte ausführen"
+    echo "21) ClamAV installieren & konfigurieren"
     echo "0) Beenden"
     echo "=========================================="
 }
@@ -460,8 +485,10 @@ run_selected_steps() {
                 schritt_blacklist_modules
                 schritt_kexec_tools
                 schritt_autoremove
+                schritt_clamav
                 schritt_systemchecks
                 ;;
+            21) schritt_clamav ;;
         esac
     done
 
