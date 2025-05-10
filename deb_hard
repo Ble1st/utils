@@ -1,65 +1,101 @@
-!/bin/bash
-#Ende wenn Absturz
+#!/bin/bash
+# Debian 12 Hardening Skript für KRITIS nach BSI, CIS und NIDS
+
 set -euo pipefail
 
-#Passwortregeln (PAM)
+log() { echo "[INFO] $1"; }
+err() { echo "[ERROR] $1" >&2; }
 
+# =======================
+# Konfigurierbare Variablen
+# =======================
+EMAIL="admin@example.com"         # Zieladresse für Systemmails
+LOCALHOST="localhost"             # Hostname für lokale Mailzustellung und Postfix
+# =======================
+
+# Hilfsfunktion: Eintrag sicher zur /etc/fstab hinzufügen (nur wenn Mountpoint nicht bereits existiert)
+safe_add_to_fstab() {
+    local entry="$1"
+    local mountpoint="$2"
+    if ! grep -qE "[[:space:]]${mountpoint}[[:space:]]" /etc/fstab; then
+        echo "$entry" >> /etc/fstab
+        log "Füge $mountpoint zu /etc/fstab hinzu."
+    else
+        log "$mountpoint ist bereits in /etc/fstab eingetragen."
+    fi
+}
+
+# 1. Systemaktualisierung und Paketmanagement
+log "Aktualisiere Systempakete..."
+apt update && apt full-upgrade -y
+
+# 2. Automatische Sicherheitsupdates aktivieren
+log "Installiere unattended-upgrades..."
+apt install unattended-upgrades apt-listchanges -y
+dpkg-reconfigure --priority=low unattended-upgrades
+
+# 3. Nur benötigte Pakete installieren (Hinweis)
+log "Überprüfe installierte Pakete. Entferne ggf. nicht benötigte Pakete manuell."
+# Beispiel: apt purge <paketname> && apt autoremove --purge
+
+# 4. Passwortregeln (PAM)
+log "Setze starke Passwortregeln mit PAM..."
 apt install libpam-pwquality -y
+if ! grep -q "pam_pwquality.so" /etc/pam.d/common-password; then
+  echo 'password requisite pam_pwquality.so retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1' >> /etc/pam.d/common-password
+fi
 
-echo 'password requisite pam_pwquality.so retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1' >> /etc/pam.d/common-password
-
-#SSH
+# 5. SSH-Härtung (Nur Passwort, kein 2FA, kein KeyOnly)
+log "Härte SSH-Server (nur Passwortauthentifizierung, kein 2FA, kein KeyOnly)..."
 sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
+sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+sed -i 's/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication no/' /etc/ssh/sshd_config
+echo "ClientAliveInterval 300" >> /etc/ssh/sshd_config
+echo "ClientAliveCountMax 2" >> /etc/ssh/sshd_config
+echo "MaxAuthTries 3" >> /etc/ssh/sshd_config
+cat <<EOL >> /etc/ssh/sshd_config
+
+# Sichere Algorithmen
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com
+KexAlgorithms curve25519-sha256
+EOL
 systemctl reload sshd
 
-#Härtung des Kernels (Proxmox spezifische Inhalte enthalten.
-cat <<EOF > /etc/sysctl.d/99-proxmox-hardening.conf
-############################################################
-# Netzwerkhärtung
-############################################################
+# 6. AppArmor aktivieren und auf enforce setzen
+log "Aktiviere AppArmor und setze alle Profile auf enforce..."
+apt install apparmor apparmor-profiles apparmor-utils -y
+systemctl enable apparmor --now
+aa-enforce /etc/apparmor.d/*
+log "AppArmor-Status:"
+aa-status
 
-# IPv4 und IPv6 Forwarding (für Cluster/Container/VMs)
-net.ipv4.ip_forward = 1
+# 7. Kernel- und Netzwerkhärtung
+log "Wende Kernel- und Netzwerkhärtung an..."
+cat <<EOF > /etc/sysctl.d/99-hardening.conf
+# Netzwerkhärtung (BSI, CIS)
+net.ipv4.ip_forward = 0
 net.ipv6.conf.all.forwarding = 0
-
-# Keine Redirects (verhindert Routingmanipulation)
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
-
-# Source Routing deaktivieren (Spoofing-Schutz)
 net.ipv4.conf.all.accept_source_route = 0
 net.ipv4.conf.default.accept_source_route = 0
 net.ipv6.conf.all.accept_source_route = 0
 net.ipv6.conf.default.accept_source_route = 0
-
-# ICMP Redirects ablehnen
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.default.accept_redirects = 0
 net.ipv6.conf.all.accept_redirects = 0
 net.ipv6.conf.default.accept_redirects = 0
-
-# Secure Redirects ablehnen
 net.ipv4.conf.all.secure_redirects = 0
 net.ipv4.conf.default.secure_redirects = 0
-
-# Logging von verdächtigen Paketen
 net.ipv4.conf.all.log_martians = 1
 net.ipv4.conf.default.log_martians = 1
-
-# Reverse Path Filtering (Schutz vor IP-Spoofing)
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
-
-# Broadcast ICMP ignorieren (Smurf-Schutz)
 net.ipv4.icmp_echo_ignore_broadcasts = 1
-
-# Bogus ICMP Responses ignorieren
 net.ipv4.icmp_ignore_bogus_error_responses = 1
-
-# TCP SYN Cookies aktivieren (SYN-Flood-Schutz)
 net.ipv4.tcp_syncookies = 1
-
-# TCP Stack härten
 net.ipv4.tcp_timestamps = 0
 net.ipv4.tcp_sack = 0
 net.ipv4.tcp_syn_retries = 3
@@ -67,79 +103,164 @@ net.ipv4.tcp_max_syn_backlog = 4096
 net.ipv4.tcp_fin_timeout = 15
 net.ipv4.tcp_keepalive_time = 600
 
-############################################################
 # IPv6
-############################################################
-
-# Router Advertisements deaktivieren, wenn keine Autokonfiguration nötig
 net.ipv6.conf.all.accept_ra = 0
 net.ipv6.conf.default.accept_ra = 0
 
-############################################################
-# Kernel/Memory-Härtung
-############################################################
-
-# Kernel-Debugging beschränken
+# Kernel/Memory
 kernel.dmesg_restrict = 1
 kernel.kptr_restrict = 2
 kernel.perf_event_paranoid = 3
-
-# Core Dumps deaktivieren
 fs.suid_dumpable = 0
-
-# Speicherverwaltung härten
 vm.swappiness = 10
 vm.mmap_min_addr = 65536
-
-# ASLR aktivieren
 kernel.randomize_va_space = 2
-
-# Unprivilegierte eBPF Nutzung verbieten
 kernel.unprivileged_bpf_disabled = 1
 
-############################################################
-# LXC/VM/Container-Härtung
-############################################################
-
-# Unprivilegierte User-Namespaces verbieten (Container-Ausbruchsschutz)
+# LXC/VM/Container
 kernel.unprivileged_userns_clone = 0
-
-# Netzwerkbrücken-Filter aktivieren (Firewall/ARP auf Bridges)
 net.bridge.bridge-nf-call-iptables = 1
 net.bridge.bridge-nf-call-ip6tables = 1
 net.bridge.bridge-nf-call-arptables = 1
 
-############################################################
-# Weitere Maßnahmen für maximale Sicherheit
-############################################################
-
-# Kernelmodul-Nachladen deaktivieren (nur bei statischen Setups!)
+# Weitere Maßnahmen
 kernel.modules_disabled = 1
-
-# Schutz vor OOM-Angriffen: Kernel-Panic bei OOM
 vm.panic_on_oom = 1
 kernel.panic = 10
-
-# Systemweite Beschränkung von Symlink-Following (Race-Condition-Schutz)
 fs.protected_symlinks = 1
 fs.protected_hardlinks = 1
-
-# Procfs-Restriktionen (Zugriff auf /proc einschränken)
 kernel.yama.ptrace_scope = 2
-
-# Memory Core Patterns (Verhindert unbeabsichtigte Speicherabbilder)
 kernel.core_pattern = |/bin/false
 EOF
+sysctl --system
 
-#Samhain installieren
+# 8. /tmp und /dev/shm absichern (noexec, nosuid, nodev)
+log "Härten von /tmp und /dev/shm (tmpfs, noexec, nosuid, nodev)..."
+safe_add_to_fstab "tmpfs /tmp tmpfs defaults,noexec,nosuid,nodev 0 0" "/tmp"
+safe_add_to_fstab "tmpfs /dev/shm tmpfs defaults,noexec,nosuid,nodev 0 0" "/dev/shm"
+mount -o remount /tmp || true
+mount -o remount /dev/shm || true
 
-apt install samhain -y
+for mountpoint in /tmp /dev/shm; do
+    mount | grep "$mountpoint" | grep -q "noexec" || log "Warnung: $mountpoint ohne noexec gemountet!"
+    mount | grep "$mountpoint" | grep -q "nosuid" || log "Warnung: $mountpoint ohne nosuid gemountet!"
+    mount | grep "$mountpoint" | grep -q "nodev" || log "Warnung: $mountpoint ohne nodev gemountet!"
+done
 
-#Samhain kustomisen 
+# 9. Protokollierung und Audit
+log "Installiere und konfiguriere auditd zur Protokollierung..."
+apt install auditd audispd-plugins -y
+systemctl enable auditd --now
+auditctl -w /etc/passwd -p wa -k passwd_changes
+auditctl -w /etc/shadow -p wa -k shadow_changes
 
-nano /etc/samhainrc
+# 10. Dateiintegritätsprüfung (AIDE)
+log "Installiere und initialisiere AIDE..."
+apt install aide -y
+dpkg-reconfigure aide
+aideinit
+cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
 
-#samhain ausführen
+# 11. Backup-Lösung: Timeshift
+log "Installiere Timeshift (Backup/Recovery)..."
+if ! command -v timeshift >/dev/null 2>&1; then
+  apt install timeshift -y || (
+    log "Timeshift ist nicht in den offiziellen Debian-Repos. Installiere über externes Repo..."
+    apt install wget -y
+    wget -O /tmp/timeshift.deb https://github.com/teejee2008/timeshift/releases/latest/download/timeshift-latest-amd64.deb
+    apt install /tmp/timeshift.deb -y
+    rm /tmp/timeshift.deb
+  )
+fi
+log "Bitte Timeshift konfigurieren und ein erstes Snapshot anlegen!"
 
-samhain -t init
-samhain -t check -D
+# 12. Fail2Ban zum Schutz vor Brute-Force-Angriffen (angepasst)
+log "Installiere und konfiguriere Fail2Ban..."
+apt-get install -y fail2ban || { log "Fehler: fail2ban konnte nicht installiert werden!"; exit 1; }
+
+cat <<EOF > /etc/fail2ban/jail.local
+[DEFAULT]
+bantime  = 1h
+findtime  = 10m
+maxretry = 3
+usedns = warn
+logencoding = auto
+enabled = false
+mode = normal
+filter = %(__name__)s[mode=%(mode)s]
+destemail = $EMAIL
+sender = root@${LOCALHOST}
+mta = sendmail
+protocol = tcp
+chain = <known/chain>
+port = 0:65535
+fail2ban_agent = Fail2Ban/%(fail2ban_version)s
+banaction = iptables-multiport
+banaction_allports = iptables-allports
+action = %(banaction)s[port="%(port)s", protocol="%(protocol)s", chain="%(chain)s"]
+ignoreip = 127.0.0.1/8 192.168.0.0/24 10.0.0.0/24
+
+[sshd]
+enabled = true
+port = 2222
+backend = systemd
+maxretry = 3
+bantime = 3600
+findtime = 600
+
+[proxmox]
+enabled = true
+port = 8006
+filter = proxmox
+backend = systemd
+maxretry = 3
+bantime = 3600
+findtime = 600
+EOF
+
+cat <<EOF > /etc/fail2ban/filter.d/proxmox.conf
+[Definition]
+failregex = ^.*pam_unix\(proxmox-ve-auth:auth\): authentication failure; .* rhost=<HOST> .*\$
+            ^.*pvedaemon\[.*\]: authentication failure; rhost=<HOST> .*\$
+ignoreregex =
+EOF
+
+systemctl enable --now fail2ban
+log "Fail2ban installiert und konfiguriert."
+
+# 13. Postfix installieren, konfigurieren und root-Mails umleiten
+log "Installiere und konfiguriere Postfix für lokalen Versand..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y postfix mailutils || { log "Fehler: postfix konnte nicht installiert werden!"; exit 1; }
+
+# Setze Postfix auf lokale Zustellung (satellite: alle Mails an $EMAIL)
+postconf -e "relayhost = "
+postconf -e "mydestination = ${LOCALHOST}"
+postconf -e "inet_interfaces = loopback-only"
+
+# root-Mails an $EMAIL umleiten
+if grep -q '^root:' /etc/aliases; then
+    sed -i "s/^root:.*/root: $EMAIL/" /etc/aliases
+else
+    echo "root: $EMAIL" >> /etc/aliases
+fi
+newaliases
+
+log "Alle lokalen Mails an root werden an $EMAIL weitergeleitet."
+
+# 14. Automatische Rechtehärtung wichtiger Dateien
+log "Setze restriktive Rechte auf sensible Dateien..."
+chmod 600 /etc/shadow
+chmod 600 /etc/gshadow
+chmod 644 /etc/passwd
+chmod 644 /etc/group
+
+# 15. Lynis für Security-Audit installieren (optional, Empfehlung)
+log "Installiere Lynis für regelmäßige Security-Audits..."
+apt install lynis -y
+log "Führe Lynis-Audit aus (Bericht beachten!):"
+lynis audit system || true
+
+log "Systemhärtung abgeschlossen. Bitte Neustart durchführen und Konfiguration überprüfen."
+
+exit 0
