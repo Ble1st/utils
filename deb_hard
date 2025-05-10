@@ -1,4 +1,7 @@
-  cat <<EOF > /etc/sysctl.d/99-proxmox-hardening.conf
+!/bin/bash
+set -euo pipefail
+
+cat <<EOF > /etc/sysctl.d/99-proxmox-hardening.conf
 ############################################################
 # Netzwerkhärtung
 ############################################################
