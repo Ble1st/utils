@@ -8,7 +8,7 @@ cat <<EOF > /etc/sysctl.d/99-proxmox-hardening.conf
 
 # IPv4 und IPv6 Forwarding (für Cluster/Container/VMs)
 net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
+net.ipv6.conf.all.forwarding = 0
 
 # Keine Redirects (verhindert Routingmanipulation)
 net.ipv4.conf.all.send_redirects = 0
