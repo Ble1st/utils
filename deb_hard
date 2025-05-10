@@ -130,4 +130,16 @@ kernel.yama.ptrace_scope = 2
 # Memory Core Patterns (Verhindert unbeabsichtigte Speicherabbilder)
 kernel.core_pattern = |/bin/false
 EOF
-  
+
+#Samhain installieren
+
+apt install samhain -y
+
+#Samhain kustomisen 
+
+nano /etc/samhainrc
+
+#samhain ausführen
+
+samhain -t init
+samhain -t check -D
