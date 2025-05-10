@@ -2,6 +2,16 @@
 #Ende wenn Absturz
 set -euo pipefail
 
+#Passwortregeln (PAM)
+
+apt install libpam-pwquality -y
+
+echo 'password requisite pam_pwquality.so retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1' >> /etc/pam.d/common-password
+
+#SSH
+sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
+systemctl reload sshd
+
 #Härtung des Kernels (Proxmox spezifische Inhalte enthalten.
 cat <<EOF > /etc/sysctl.d/99-proxmox-hardening.conf
 ############################################################
