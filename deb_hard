@@ -1,3 +1,4 @@
+  cat <<EOF > /etc/sysctl.d/99-proxmox-hardening.conf
 ############################################################
 # Netzwerkhärtung
 ############################################################
@@ -113,3 +114,5 @@ kernel.yama.ptrace_scope = 2
 
 # Memory Core Patterns (Verhindert unbeabsichtigte Speicherabbilder)
 kernel.core_pattern = |/bin/false
+EOF
+  
