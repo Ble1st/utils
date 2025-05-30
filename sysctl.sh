@@ -1,20 +1,39 @@
 #!/bin/bash
 
 # Interaktives Skript zur Kernel-Härtung für generische Linux-Server
-# mit optionalen spezifischen Einstellungen für Docker oder Proxmox (VE/BK).
-# JEDER Parameter ist kommentiert, damit klar ist, was er bewirkt.
+# mit optionalen spezifischen Einstellungen für Docker oder Proxmox.
+# Jeder Parameter ist kommentiert, damit klar ist, was er bewirkt.
+# Erstellt und gepflegt von Ble1st, Stand: 2025-05-30
 
-set -e
+set -euo pipefail
 
+VERSION="1.1.0"
 OUTFILE="/etc/sysctl.d/90-linux-hardened.conf"
 TMPFILE="$(mktemp)"
+LOGFILE="/var/log/kernel-hardening.log"
 
-# Standard-Parameter (generisch & restriktiv), alle mit Kommentaren
+# --- Root-Prüfung ---
+if [[ $EUID -ne 0 ]]; then
+    echo "Dieses Skript muss als root ausgeführt werden."
+    exit 1
+fi
+
+# --- sysctl-Prüfung ---
+if ! command -v sysctl >/dev/null 2>&1; then
+    echo "sysctl nicht gefunden. Bitte procps installieren."
+    exit 1
+fi
+
+# --- Backup vorheriger Konfiguration ---
+if [[ -f "$OUTFILE" ]]; then
+    cp "$OUTFILE" "${OUTFILE}.backup-$(date +%Y%m%d-%H%M%S)"
+fi
+
+# --- Standard-Parameter, alle mit Kommentaren ---
 cat > "$TMPFILE" << 'EOF'
 # === Kernel-Härtung für generische Linux-Server ===
 
 # --- Netzwerk Hardening ---
-
 net.ipv4.ip_forward = 0                    # IPv4-Routing deaktivieren (keine Pakete weiterleiten)
 net.ipv6.conf.all.forwarding = 0           # IPv6-Routing deaktivieren (keine Pakete weiterleiten)
 net.ipv4.conf.all.send_redirects = 0       # ICMP Redirects (Routen-Umleitungen) auf allen Interfaces verbieten
@@ -42,7 +61,6 @@ net.ipv6.conf.all.disable_ipv6 = 1         # IPv6 auf allen Interfaces deaktivie
 net.ipv6.conf.default.disable_ipv6 = 1     # IPv6 auf neuen Interfaces deaktivieren
 
 # --- SYN-Flood und TCP Hardening ---
-
 net.ipv4.tcp_max_syn_backlog = 4096        # Erhöht die Warteschlange für neue Verbindungen (Schutz gegen SYN-Flood)
 net.ipv4.tcp_synack_retries = 2            # Reduziert die Wiederholungen für SYN/ACK (schnellere Freigabe von Ressourcen)
 net.ipv4.tcp_max_orphans = 16384           # Maximale Anzahl an "verwaisten" TCP-Verbindungen
@@ -52,13 +70,11 @@ net.ipv4.tcp_sack = 0                      # TCP SACK (Selective ACK) deaktivier
 net.ipv4.tcp_fack = 0                      # TCP FACK deaktivieren (zusammen mit sack, siehe oben)
 
 # --- IP-Fragmentierungsangriffe erschweren ---
-
 net.ipv4.ipfrag_high_thresh = 262144       # Obergrenze für zwischengespeicherte IP-Fragmentierung (in Bytes)
 net.ipv4.ipfrag_low_thresh = 196608        # Untergrenze für Freigabe von Fragmenten (in Bytes)
 net.ipv4.ipfrag_time = 30                  # Aufbewahrungszeit für Fragmente (Sekunden)
 
 # --- Speicher- & Memory Protection ---
-
 kernel.kptr_restrict = 2                   # Kernel-Pointer niemals für unpriv. User anzeigen (keine Infoleaks via /proc)
 kernel.dmesg_restrict = 1                  # Zugriff auf dmesg auf root beschränken (keine Kernel-Infos für User)
 kernel.yama.ptrace_scope = 2               # ptrace (Debugger) nur auf eigene Prozesse erlauben (erschwert Exploits)
@@ -71,7 +87,6 @@ fs.protected_regular = 1                   # Schutz vor Angriffen mit regulären
 fs.suid_dumpable = 0                       # Keine Speicherabbilder (core dumps) bei SUID-Programmen (verhindert Infoleaks)
 
 # --- Zusätzliche Kernel-Härtung ---
-
 kernel.unprivileged_bpf_disabled = 1       # Unpriv. User dürfen kein eBPF verwenden (erschwert Exploits)
 kernel.kexec_load_disabled = 1             # Kein Laden neuer Kernel-Images zur Laufzeit (erschwert Rootkits)
 kernel.unprivileged_userns_clone = 0       # Unpriv. User dürfen keine User-Namespaces anlegen (erschwert Escapes)
@@ -84,7 +99,6 @@ kernel.panic_on_oops = 1                   # Bei Kernel-Oops ebenfalls sofort re
 kernel.printk = 4 4 1 7                    # Kernel-Logging restriktiv (weniger Infos für Angreifer)
 
 # --- User namespaces ---
-
 user.max_user_namespaces = 15000           # Maximale User-Namespaces (erlaubt ggf. für bestimmte Anwendungen, sonst verringern!)
 
 # --- Memory Tagging Extension (nur ARMv8.5+ mit passendem Kernel, sonst ignoriert) ---
@@ -92,21 +106,24 @@ user.max_user_namespaces = 15000           # Maximale User-Namespaces (erlaubt g
 # kernel.arm64.untag_mask = 0             # Maskiert keine Tags
 
 # --- Zusätzliche Härtungsempfehlungen ---
-
 fs.protected_tmpfs = 1                     # Schutz vor Symlink-Angriffen im tmpfs (/tmp auf tmpfs gemountet)
 kernel.kstack_depth_to_print = 0           # Kernel Stacktraces werden nicht ausgegeben (gegen Infoleaks)
 kernel.ftrace_enabled = 0                  # Kernel Tracing für unpriv. User deaktivieren (gegen Infoleaks)
 kernel.sched_autogroup_enabled = 0         # Automatische Prozessgruppierung ausschalten (Side-Channel und Predictability)
 vm.oom_dump_tasks = 1                      # OOM-Killer loggt alle Prozesse (hilft bei Debugging, kein direkter Security-Gewinn)
-
-# --- Ergänzungen aus madduci-Gist ---
-
 kernel.core_uses_pid = 1                   # Corefiles enthalten die PID (hilft Forensik)
 kernel.core_pattern = /tmp/core.%e.%p.%h.%t # Corefiles in /tmp: Name, PID, Host und Zeit (Forensik, kein Security-Risiko)
 kernel.ctrl-alt-del = 0                    # Ctrl+Alt+Del Reboot abschalten (Schutz vor versehentlichem/unerlaubtem Reboot)
+kernel.core_pipe_limit = 0                 # Parallele Core-Dumps deaktivieren (erschwert DoS)
+fs.protected_restricted_chown = 1          # Restriktiveres Chown-Verhalten (bei modernen Kerneln möglich)
+net.ipv4.tcp_fin_timeout = 15              # Reduziert FIN-Wait Timeout (DoS-Schutz)
+net.ipv4.tcp_keepalive_time = 600          # TCP Keepalive-Zeit (für Server sinnvoll)
+net.ipv4.tcp_keepalive_probes = 5          # Wenige Keepalive-Probes senden
+net.ipv4.tcp_keepalive_intvl = 15          # Intervall zwischen Keepalive-Probes (Sekunden)
 EOF
 
-# Menü
+# --- Menü ---
+echo "Linux Kernel Hardening Script v${VERSION} für Ble1st"
 echo "Welche Software ist auf diesem System installiert?"
 echo "1) Nichts davon (nur generische Linux-Härtung)"
 echo "2) Docker"
@@ -115,7 +132,12 @@ echo "4) Proxmox Backup Server (PBS)"
 echo "Mehrfachauswahl ist möglich (z.B. 2 3):"
 read -rp "Bitte Auswahl eingeben: " auswahl
 
-# Spaces entfernen und in Array aufteilen
+# --- Eingabe validieren ---
+if ! [[ "$auswahl" =~ ^([1-4][\ ]?)+$ ]]; then
+    echo "Ungültige Eingabe! Bitte nur Zahlen 1 bis 4, getrennt durch Leerzeichen."
+    exit 1
+fi
+
 read -ra auswahl_arr <<< "$auswahl"
 
 for option in "${auswahl_arr[@]}"; do
@@ -155,20 +177,28 @@ EOF
   esac
 done
 
-# Ausgabe und Aktivierung
+# --- Vorschau & Test ---
 echo
 echo "Die folgenden Kernelparameter werden in $OUTFILE gespeichert:"
 echo "-----------------------------------------------------------"
 cat "$TMPFILE"
 echo "-----------------------------------------------------------"
 
-read -rp "Wollen Sie diese Kernel-Konfiguration anwenden? (j/N): " confirm
+read -rp "Wollen Sie diese Kernel-Konfiguration anwenden und testen? (j/N): " confirm
 if [[ "$confirm" =~ ^[JjYy]$ ]]; then
-    sudo cp "$TMPFILE" "$OUTFILE"
-    sudo sysctl --system
+    echo "Teste Konfiguration..."
+    if ! sysctl -p "$TMPFILE" >/dev/null 2>&1; then
+        echo "Fehler beim Testen der Konfiguration! Änderungen werden nicht übernommen."
+        exit 1
+    fi
+    echo "Test erfolgreich. Übernehme Konfiguration..."
+    cp "$TMPFILE" "$OUTFILE"
+    sysctl --system
     echo "Konfiguration aktiviert."
+    echo "[$(date +%F\ %T)] Kernel-Härtung durchgeführt von $USER (Version $VERSION)" >> "$LOGFILE"
 else
     echo "Keine Änderungen wurden vorgenommen."
 fi
 
+# --- Aufräumen ---
 rm "$TMPFILE"
