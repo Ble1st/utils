@@ -1,0 +1,68 @@
+name: Nmap Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Hostname oder IP (nur mit Erlaubnis scannen!)"
+        required: true
+      tcp_ports:
+        description: "TCP Ports (z. B. 1-65535 oder 22,80,443)"
+        required: false
+        default: "1-65535"
+      timing:
+        description: "Nmap Timing (T0..T5), T3 empfohlen"
+        required: false
+        default: "T3"
+      do_udp:
+        description: "UDP-Top-Ports scannen?"
+        required: false
+        default: "false"
+      udp_top_ports:
+        description: "Anzahl UDP Top-Ports"
+        required: false
+        default: "200"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install nmap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nmap
+
+      - name: TCP scan
+        run: |
+          target="${{ inputs.target }}"
+          ports="${{ inputs.tcp_ports }}"
+          timing="${{ inputs.timing }}"
+          safe_target=$(printf "%s" "$target" | tr -cd 'A-Za-z0-9_.-')
+          nmap -Pn -"${timing}" -sS -p "$ports" -sV -sC -O \
+            -oA "nmap_tcp_${safe_target}" "$target"
+
+      - name: UDP scan (optional)
+        if: inputs.do_udp == 'true'
+        run: |
+          target="${{ inputs.target }}"
+          top="${{ inputs.udp_top_ports }}"
+          timing="${{ inputs.timing }}"
+          safe_target=$(printf "%s" "$target" | tr -cd 'A-Za-z0-9_.-')
+          sudo nmap -Pn -"${timing}" -sU --top-ports "$top" -sV \
+            -oA "nmap_udp_${safe_target}" "$target"
+
+      - name: TLS details (falls 443 offen)
+        run: |
+          target="${{ inputs.target }}"
+          safe_target=$(printf "%s" "$target" | tr -cd 'A-Za-z0-9_.-')
+          nmap -p 443 --script ssl-enum-ciphers,ssl-cert "$target" \
+            -oN "nmap_tls_${safe_target}.txt" || true
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: nmap-results
+          path: |
+            nmap_tcp_*.* 
+            nmap_udp_*.* 
+            nmap_tls_*.txt
