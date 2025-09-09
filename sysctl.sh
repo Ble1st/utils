@@ -12,9 +12,16 @@ OUTFILE="/etc/sysctl.d/90-linux-hardened.conf"
 TMPFILE="$(mktemp)"
 LOGFILE="/var/log/kernel-hardening.log"
 
+# --- Kommandozeilenargumente prüfen ---
+if [[ "${1:-}" == "--version" ]] || [[ "${1:-}" == "-v" ]]; then
+    echo "Linux Kernel Hardening Script v${VERSION} für Ble1st"
+    exit 0
+fi
+
 # --- Root-Prüfung ---
 if [[ $EUID -ne 0 ]]; then
     echo "Dieses Skript muss als root ausgeführt werden."
+    echo "Für Versionsinformation verwenden Sie: $0 --version"
     exit 1
 fi
 
