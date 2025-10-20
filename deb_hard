@@ -3,6 +3,14 @@
 
 set -euo pipefail
 
+VERSION="1.0.0"
+
+# --- Kommandozeilenargumente prüfen ---
+if [[ "${1:-}" == "--version" ]] || [[ "${1:-}" == "-v" ]]; then
+    echo "Debian Hardening Script v${VERSION} für Ble1st"
+    exit 0
+fi
+
 log() { echo "[INFO] $1"; }
 err() { echo "[ERROR] $1" >&2; }
 
@@ -24,6 +32,10 @@ safe_add_to_fstab() {
         log "$mountpoint ist bereits in /etc/fstab eingetragen."
     fi
 }
+
+# --- Versionsinformation ---
+echo "Debian Hardening Script v${VERSION} für Ble1st"
+echo ""
 
 # 1. Systemaktualisierung und Paketmanagement
 log "Aktualisiere Systempakete..."
